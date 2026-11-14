@@ -2053,21 +2053,23 @@ function createRoom(){
     broadcast();
     $('createBtn').disabled = false;
     $('createBtn').textContent = '创建房间';
-  });startHostHeartbeat();               // ← 新增
+    startHostHeartbeat();
+  });
 
-    peer.on('error', e => {
-  console.error('peer error', e);
-  $('joinBtn').disabled = false;
-  $('joinBtn').textContent = '加入房间';
-  if (e.type === 'peer-unavailable') toast('找不到这个房间，检查一下房间号吧');
-  else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error')
-    toast('网络连接异常，请检查网络或换个网络后重试');
-  else if (!suppressDisconnectToast) toast('连接失败：' + (e.type || '未知错误'));
-  // 关键：出错后销毁 peer，允许用户直接重试，不用刷新
-  stopClientWatchdog();
-  try { peer.destroy(); } catch(err){}
-  peer = null; hostConn = null;
-});
+  peer.on('error', e => {
+    console.error('peer error', e);
+    $('createBtn').disabled = false;
+    $('createBtn').textContent = '创建房间';
+    if (e.type === 'unavailable-id'){
+      try { peer.destroy(); } catch(err){}
+      peer = null; isHost = false; roomCode = '';
+      createRoom();
+    } else if (!suppressDisconnectToast){
+      toast('创建失败：' + (e.type || '未知错误'));
+      try { peer.destroy(); } catch(err){}
+      peer = null; isHost = false;
+    }
+  });
 
   peer.on('connection', conn => {
     conn.on('data', d => {
@@ -2099,46 +2101,52 @@ function joinRoom(){
   peer.on('open', () => {
     hostConn = peer.connect('fumopp-' + code, { reliable: true });
     hostConn.on('open', () => {
-  joined = true;
-  hostConn.send({ t: 'join', name });
-  startClientWatchdog();            // ← 新增
-  $('joinBtn').disabled = false;
-  $('joinBtn').textContent = '加入房间';
-});
-hostConn.on('data', clientOnData);
-hostConn.on('close', () => {        // ← 整段替换
-  stopClientWatchdog();
-  if (suppressDisconnectToast) return;
-  suppressDisconnectToast = true;
-  toast('房主已离线，房间关闭');
-  teardown();
-});
-hostConn.on('error', e => console.error(e));
+      joined = true;
+      hostConn.send({ t: 'join', name });
+      startClientWatchdog();
+      $('joinBtn').disabled = false;
+      $('joinBtn').textContent = '加入房间';
+    });
+    hostConn.on('data', clientOnData);
+    hostConn.on('close', () => {
+      stopClientWatchdog();
+      if (suppressDisconnectToast) return;
+      suppressDisconnectToast = true;
+      toast('房主已离线，房间关闭');
+      teardown();
+    });
+    hostConn.on('error', e => console.error(e));
   });
 
   peer.on('error', e => {
-  console.error('peer error', e);
-  $('joinBtn').disabled = false;
-  $('joinBtn').textContent = '加入房间';
-  if (e.type === 'peer-unavailable') toast('找不到这个房间，检查一下房间号吧');
-  else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error')
-    toast('网络连接异常，请检查网络或换个网络后重试');
-  else if (!suppressDisconnectToast) toast('连接失败：' + (e.type || '未知错误'));
-});
-
-peer.on('disconnected', () => {
-  try { peer.reconnect(); } catch(e){}
-});
-
-  setTimeout(() => {
-  if (!joined && !suppressDisconnectToast){
+    console.error('peer error', e);
     $('joinBtn').disabled = false;
     $('joinBtn').textContent = '加入房间';
-    toast('连接超时，请重试（跨境网络可能较慢）');
-    try { peer.destroy(); } catch(e){}
-    peer = null;
-  }
-}, 20000);
+    if (e.type === 'peer-unavailable') toast('找不到这个房间，检查一下房间号吧');
+    else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error')
+      toast('网络连接异常，请检查网络或换个网络后重试');
+    else if (!suppressDisconnectToast) toast('连接失败：' + (e.type || '未知错误'));
+    
+    // 出错后销毁 peer，允许用户直接重试
+    stopClientWatchdog();
+    try { peer.destroy(); } catch(err){}
+    peer = null; hostConn = null;
+  });
+
+  peer.on('disconnected', () => {
+    try { peer.reconnect(); } catch(e){}
+  });
+
+  setTimeout(() => {
+    if (!joined && !suppressDisconnectToast){
+      $('joinBtn').disabled = false;
+      $('joinBtn').textContent = '加入房间';
+      toast('连接超时，请重试（跨境网络可能较慢）');
+      stopClientWatchdog();
+      try { peer.destroy(); } catch(e){}
+      peer = null; hostConn = null;
+    }
+  }, 20000);
 }
 
 /* =========================================================
