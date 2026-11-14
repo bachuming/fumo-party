@@ -167,7 +167,7 @@ body[data-theme="sakuya"] {
   }
   .seg.active{background:#fff;color:var(--pink-dark);box-shadow:0 4px 12px -6px rgba(200,120,170,.8);}
 
-  .photo{width:100%;border-radius:20px;display:block;object-fit:cover;max-height:46vh;background:#f6f0f5;}
+  .photo{width:100%;border-radius:20px;display:block;object-fit:contain;max-height:46vh;background:#f0f4f8;}
   .photo.small{max-height:34vh;}
 
   .timer-row{display:flex;align-items:center;gap:12px;margin-bottom:14px;}
@@ -197,6 +197,7 @@ body[data-theme="sakuya"] {
   .sub{
     background:#fff8fc;border:2px solid #ffe6f1;border-radius:16px;padding:15px 16px;
     font-size:15px;line-height:1.55;cursor:pointer;transition:all .15s;word-break:break-word;
+    white-space:pre-wrap;
   }
   .sub:hover{border-color:var(--pink);background:#fff0f8;transform:translateY(-1px);}
   .sub:active{transform:scale(.985);}
@@ -235,8 +236,8 @@ body[data-theme="sakuya"] {
 
 /* 相册卡片 */
 .gallery-card{flex:0 0 100%;scroll-snap-align:center;background:#fff;border-radius:20px;padding:12px;border:2px solid var(--border);display:flex;flex-direction:column;gap:12px;box-shadow:0 8px 16px -8px rgba(0,0,0,0.1);}
-.gallery-img{width:100%;border-radius:12px;object-fit:cover;max-height:40vh;}
-.gallery-text{font-size:16px;font-weight:800;text-align:center;margin:0;}
+.gallery-img{width:100%;border-radius:12px;object-fit:contain;max-height:40vh;background:#f0f4f8;}
+.gallery-text{font-size:16px;font-weight:800;text-align:center;margin:0;white-space:pre-wrap;word-break:break-word;}
 .gallery-author{font-size:13px;color:var(--pink-dark);text-align:center;margin:0;font-weight:700;}
 
   .loading-dots::after{content:'';animation:dots 1.4s steps(4,end) infinite;}
@@ -262,6 +263,7 @@ body[data-theme="sakuya"] {
   }
   .result-text{
     font-size:16px;font-weight:800;line-height:1.55;margin:0 0 8px;word-break:break-word;
+    white-space:pre-wrap;
   }
   .result-sub.winner .result-text{font-size:18px;}
   .result-author{font-size:12.5px;color:var(--ink-soft);margin:0 0 10px;}
@@ -926,8 +928,25 @@ let G = null;
 let suppressDisconnectToast = false;
 let isPlaytestMode = false;
 let snowTriggered = false;
-const uploadChunks = new Map(); // 👈 新增这一行
+let hostHeartbeatTimer = null;
+let hostWatchdogTimer = null;
+let lastHostMsgAt = 0;
+const uploadChunks = new Map();
 
+const PEER_CONFIG = {
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' }
+    ]
+  },
+  debug: 1
+};
+  
 function defaultS(){
   return {
     gallery: [],phase: 'home', round: 0, players: [], uploaderId: null, duration: 60,
@@ -1529,7 +1548,9 @@ function removePlayer(pid){
    客户端逻辑
    ========================================================= */
 function clientOnData(d){
+  lastHostMsgAt = Date.now();       // ← 新增
   switch (d.t){
+    case 'ping': break;             // ← 新增：心跳包
     case 'welcome':
       myId = d.id;
       roomCode = d.code;
@@ -1579,6 +1600,31 @@ function leaveRoom(){
   }
 }
 
+function startHostHeartbeat(){
+  stopHostHeartbeat();
+  hostHeartbeatTimer = setInterval(() => {
+    sendToAll({ t: 'ping' });
+  }, 5000);
+}
+function stopHostHeartbeat(){
+  if (hostHeartbeatTimer){ clearInterval(hostHeartbeatTimer); hostHeartbeatTimer = null; }
+}
+function startClientWatchdog(){
+  stopClientWatchdog();
+  lastHostMsgAt = Date.now();
+  hostWatchdogTimer = setInterval(() => {
+    if (Date.now() - lastHostMsgAt > 20000){
+      stopClientWatchdog();
+      if (suppressDisconnectToast) return;
+      suppressDisconnectToast = true;
+      toast('与房主的连接已断开，请重新加入房间');
+      teardown();
+    }
+  }, 5000);
+}
+function stopClientWatchdog(){
+  if (hostWatchdogTimer){ clearInterval(hostWatchdogTimer); hostWatchdogTimer = null; }
+}
 function teardown(){
   isPlaytestMode = false;
   snowTriggered = false;
@@ -1586,6 +1632,8 @@ function teardown(){
   try { clearInterval(G && G.timer); } catch(e){}
   try { clearInterval(G && G.judgeTimer); } catch(e){}
   try { clearInterval(G && G.uploadTimer); } catch(e){}
+  stopHostHeartbeat();
+stopClientWatchdog();
   try { if (hostConn) hostConn.close(); } catch(e){}
   hostConn = null;
   conns.clear();
@@ -1995,7 +2043,7 @@ function createRoom(){
   $('createBtn').disabled = true;
   $('createBtn').textContent = '创建中…';
 
-  peer = new Peer('fumopp-' + roomCode, { debug: 1 });
+  peer = new Peer('fumopp-' + roomCode, PEER_CONFIG);
 
   peer.on('open', () => {
     myId = uid();
@@ -2005,22 +2053,21 @@ function createRoom(){
     broadcast();
     $('createBtn').disabled = false;
     $('createBtn').textContent = '创建房间';
-  });
+  });startHostHeartbeat();               // ← 新增
 
-  peer.on('error', e => {
-    console.error('peer error', e);
-    $('createBtn').disabled = false;
-    $('createBtn').textContent = '创建房间';
-    if (e.type === 'unavailable-id'){
-      try { peer.destroy(); } catch(err){}
-      peer = null; isHost = false; roomCode = '';
-      createRoom();
-    } else if (!suppressDisconnectToast){
-      toast('创建失败：' + (e.type || '未知错误'));
-      try { peer.destroy(); } catch(err){}
-      peer = null; isHost = false;
-    }
-  });
+    peer.on('error', e => {
+  console.error('peer error', e);
+  $('joinBtn').disabled = false;
+  $('joinBtn').textContent = '加入房间';
+  if (e.type === 'peer-unavailable') toast('找不到这个房间，检查一下房间号吧');
+  else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error')
+    toast('网络连接异常，请检查网络或换个网络后重试');
+  else if (!suppressDisconnectToast) toast('连接失败：' + (e.type || '未知错误'));
+  // 关键：出错后销毁 peer，允许用户直接重试，不用刷新
+  stopClientWatchdog();
+  try { peer.destroy(); } catch(err){}
+  peer = null; hostConn = null;
+});
 
   peer.on('connection', conn => {
     conn.on('data', d => {
@@ -2047,43 +2094,51 @@ function joinRoom(){
   $('joinBtn').textContent = '连接中…';
 
   let joined = false;
-  peer = new Peer(null, { debug: 1 });
+  peer = new Peer(null, PEER_CONFIG);
 
   peer.on('open', () => {
     hostConn = peer.connect('fumopp-' + code, { reliable: true });
     hostConn.on('open', () => {
-      joined = true;
-      hostConn.send({ t: 'join', name });
-      $('joinBtn').disabled = false;
-      $('joinBtn').textContent = '加入房间';
-    });
-    hostConn.on('data', clientOnData);
-    hostConn.on('close', () => {
-      if (suppressDisconnectToast) return;
-      toast('与房主的连接断开了');
-      $('joinBtn').disabled = false;
-      $('joinBtn').textContent = '加入房间';
-    });
-    hostConn.on('error', e => console.error(e));
+  joined = true;
+  hostConn.send({ t: 'join', name });
+  startClientWatchdog();            // ← 新增
+  $('joinBtn').disabled = false;
+  $('joinBtn').textContent = '加入房间';
+});
+hostConn.on('data', clientOnData);
+hostConn.on('close', () => {        // ← 整段替换
+  stopClientWatchdog();
+  if (suppressDisconnectToast) return;
+  suppressDisconnectToast = true;
+  toast('房主已离线，房间关闭');
+  teardown();
+});
+hostConn.on('error', e => console.error(e));
   });
 
   peer.on('error', e => {
-    console.error('peer error', e);
-    $('joinBtn').disabled = false;
-    $('joinBtn').textContent = '加入房间';
-    if (e.type === 'peer-unavailable') toast('找不到这个房间，检查一下房间号吧');
-    else if (!suppressDisconnectToast) toast('连接失败：' + (e.type || '未知错误'));
-  });
+  console.error('peer error', e);
+  $('joinBtn').disabled = false;
+  $('joinBtn').textContent = '加入房间';
+  if (e.type === 'peer-unavailable') toast('找不到这个房间，检查一下房间号吧');
+  else if (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error')
+    toast('网络连接异常，请检查网络或换个网络后重试');
+  else if (!suppressDisconnectToast) toast('连接失败：' + (e.type || '未知错误'));
+});
+
+peer.on('disconnected', () => {
+  try { peer.reconnect(); } catch(e){}
+});
 
   setTimeout(() => {
-    if (!joined && !suppressDisconnectToast){
-      $('joinBtn').disabled = false;
-      $('joinBtn').textContent = '加入房间';
-      toast('连接超时，请重试');
-      try { peer.destroy(); } catch(e){}
-      peer = null;
-    }
-  }, 9000);
+  if (!joined && !suppressDisconnectToast){
+    $('joinBtn').disabled = false;
+    $('joinBtn').textContent = '加入房间';
+    toast('连接超时，请重试（跨境网络可能较慢）');
+    try { peer.destroy(); } catch(e){}
+    peer = null;
+  }
+}, 20000);
 }
 
 /* =========================================================
